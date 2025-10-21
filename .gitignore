@@ -1,0 +1,19 @@
+# Go build cache & binaries
+bin/
+*.exe
+*.log
+*.out
+
+# Go vendor & temp
+vendor/
+*.test
+
+# IDE / Editor settings
+.vscode/
+.idea/
+
+# macOS system files
+.DS_Store
+
+# Environment / secret files (if any)
+.env
