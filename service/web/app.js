@@ -21,6 +21,8 @@ const results = $("#results");
 
 // === Map setup (Leaflet) ===
 let map, markersLayer;
+// Fit to bounds only once on first render; then respect user's zoom/pan
+let allowFitOnce = true;
 
 function initMap() {
   if (map) return; // avoid re-init
@@ -30,9 +32,13 @@ function initMap() {
     attribution: '&copy; OpenStreetMap contributors'
   }).addTo(map);
   markersLayer = L.layerGroup().addTo(map);
+  // Auto refresh results when map view changes (debounced)
+  map.on('moveend', debounce(viewportSearch, 400));
+  // Initial fetch for current view (if logged in)
+  viewportSearch();
 }
 
-function renderOnMap(items) {
+function renderOnMap(items, fit = true) {
   if (!document.getElementById('map')) return; // map section may not exist
   if (!map) initMap();
   markersLayer.clearLayers();
@@ -57,8 +63,32 @@ function renderOnMap(items) {
     latlngs.push([lat, lon]);
   });
 
-  if (latlngs.length > 0) {
+  if (latlngs.length > 0 && fit) {
     map.fitBounds(latlngs, { padding: [30, 30] });
+  }
+}
+
+// Query all posts within current map viewport and render
+async function viewportSearch() {
+  if (!map || !getToken()) return;
+  try {
+    const b = map.getBounds();
+    const n = b.getNorth();
+    const s = b.getSouth();
+    const e = b.getEast();
+    const w = b.getWest();
+    setMsg(searchMsg, "Searching in current map view...");
+    const url = `/search?mode=viewport&n=${n}&s=${s}&e=${e}&w=${w}&limit=500`;
+    const res = await safeFetch(url);
+    const txt = await res.text();
+    if (!res.ok) { setMsg(searchMsg, "Search failed: " + txt, false); return; }
+    let arr = []; try { arr = JSON.parse(txt) || []; } catch {}
+    renderResults(arr);
+    renderOnMap(arr, allowFitOnce);
+    allowFitOnce = false;
+    setMsg(searchMsg, `Found ${arr.length} result(s) in view.`, true);
+  } catch (err) {
+    setMsg(searchMsg, "Network error: " + err, false);
   }
 }
 
@@ -80,6 +110,27 @@ async function safeFetch(path, init = {}) {
   const headers = new Headers(init.headers || {});
   if (token) headers.set("Authorization", "Bearer " + token);
   return fetch(path, { ...init, headers });
+}
+
+// Simple debounce helper to avoid spamming the backend while panning/zooming
+function debounce(fn, wait) {
+  let t;
+  return function(...args) {
+    clearTimeout(t);
+    t = setTimeout(() => fn.apply(this, args), wait);
+  };
+}
+
+// Decode JWT (without verification) to get current username for UI logic
+function getCurrentUsername() {
+  const t = getToken();
+  if (!t || !t.includes('.')) return '';
+  try {
+    const payload = JSON.parse(atob(t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+    return payload && payload.username ? String(payload.username) : '';
+  } catch {
+    return '';
+  }
 }
 
 function setMsg(el, text, ok = true) {
@@ -173,6 +224,7 @@ btnSearchMyLoc.addEventListener("click", async () => {
     formSearch.querySelector('input[name="lon"]').value = pos.coords.longitude.toFixed(6);
     setMsg(searchMsg, "Location filled.");
     if (typeof initMap === 'function') { initMap(); map && map.flyTo([Number(formSearch.querySelector('input[name="lat"]').value), Number(formSearch.querySelector('input[name="lon"]').value)], 13); }
+    setTimeout(() => { viewportSearch(); }, 450);
   } catch (e) { setMsg(searchMsg, "Failed: " + e.message, false); }
 });
 
@@ -189,7 +241,7 @@ formSearch.addEventListener("submit", async (e) => {
     if (!res.ok) { setMsg(searchMsg, "Search failed: " + txt, false); return; }
     let arr = []; try { arr = JSON.parse(txt) || []; } catch {}
     renderResults(arr);
-    renderOnMap(arr);
+    renderOnMap(arr, true);
     setMsg(searchMsg, `Found ${arr.length} result(s).`, true);
   } catch (err) { setMsg(searchMsg, "Network error: " + err, false); }
 });
@@ -202,12 +254,69 @@ function renderResults(items) {
     const imgHtml = p.url ? `<img src="${escapeHtml(p.url)}" alt="image" />` : "";
     div.innerHTML = `${imgHtml}
       <div class="result-meta">
-        <div><strong>${escapeHtml(p.user || "")}</strong></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <strong>${escapeHtml(p.user || "")}</strong>
+          <span style="font-size:12px;color:#888;">${p.id ? escapeHtml(p.id) : ''}</span>
+        </div>
         <div>${escapeHtml(p.message || "")}</div>
         <div>(${fmt(p.location?.lat)}, ${fmt(p.location?.lon)})</div>
+        <div class="actions"></div>
       </div>`;
     results.appendChild(div);
+    // If this post belongs to the logged-in user and has an id, show Delete
+    const currentUser = getCurrentUsername();
+    if (currentUser && p.user === currentUser && p.id) {
+      const actions = div.querySelector('.actions');
+      const delBtn = document.createElement('button');
+      delBtn.textContent = 'Delete';
+      delBtn.style.marginTop = '6px';
+      delBtn.addEventListener('click', async () => {
+        await deletePost(p.id, div, delBtn);
+      });
+      actions.appendChild(delBtn);
+    }
   });
+}
+
+async function deletePost(id, cardEl, btnEl) {
+  if (!getToken()) { alert('Please log in first.'); return; }
+  try {
+    btnEl.disabled = true;
+    btnEl.textContent = 'Deleting...';
+    const res = await safeFetch(`/delete?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const txt = await res.text();
+    if (!res.ok) {
+      btnEl.disabled = false;
+      btnEl.textContent = 'Delete';
+      alert('Delete failed: ' + txt);
+      return;
+    }
+    // Remove the card from UI
+    if (cardEl && cardEl.parentNode) cardEl.parentNode.removeChild(cardEl);
+    // Refresh map by running the current search again if formSearch exists
+    if (formSearch) {
+      const lat = formSearch.querySelector('input[name="lat"]')?.value || '';
+      const lon = formSearch.querySelector('input[name="lon"]')?.value || '';
+      const range = formSearch.querySelector('input[name="range"]')?.value || '200';
+      if (lat && lon) {
+        try {
+          const r = await safeFetch(`/search?lat=${lat}&lon=${lon}&range=${range}`);
+          const t = await r.text();
+          if (r.ok) {
+            let arr = []; try { arr = JSON.parse(t) || []; } catch {}
+            // Re-render list and map after deletion
+            renderResults(arr);
+            renderOnMap(arr, false);
+            setMsg(searchMsg, `Found ${arr.length} result(s).`, true);
+          }
+        } catch {}
+      }
+    }
+  } catch (e) {
+    alert('Network error: ' + e);
+    btnEl.disabled = false;
+    btnEl.textContent = 'Delete';
+  }
 }
 
 function fmt(v) { const n = Number(v); return Number.isFinite(n) ? n.toFixed(5) : ""; }

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -34,6 +33,12 @@ type Post struct {
 	Message  string   `json:"message"`       // 帖子内容
 	Location Location `json:"location"`      // 帖子对应的地理位置
 	Url      string   `json:"url,omitempty"` // 图片在GCS中的公开访问地址
+}
+
+// PostWithID is used for search responses to include ES document ID.
+type PostWithID struct {
+	ID string `json:"id"`
+	Post
 }
 
 const (
@@ -232,6 +237,21 @@ func handlerSearch(w http.ResponseWriter, r *http.Request) {
 	lat, _ := strconv.ParseFloat(r.URL.Query().Get("lat"), 64) // 解析纬度参数
 	lon, _ := strconv.ParseFloat(r.URL.Query().Get("lon"), 64) // 解析经度参数
 
+	mode := strings.ToLower(r.URL.Query().Get("mode"))
+	// Optional max results (default 200, cap 1000)
+	size := 200
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			if n < 1 {
+				size = 1
+			} else if n > 1000 {
+				size = 1000
+			} else {
+				size = n
+			}
+		}
+	}
+
 	ran := DISTANCE
 	if val := r.URL.Query().Get("range"); val != "" {
 		ran = val + "km" // 解析搜索范围参数
@@ -249,16 +269,36 @@ func handlerSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 构建地理距离查询（指定字段、距离、纬度和经度）
-	q := elastic.NewGeoDistanceQuery("location").
-		Distance(ran).
-		Lat(lat).
-		Lon(lon)
+	// 根据模式构建查询：
+	// 1) 默认圆形半径模式（lat/lon/range）
+	// 2) 视野模式（mode=viewport + n/s/e/w）使用 geo_bounding_box
+	var q elastic.Query
+	if mode == "viewport" {
+		// 读取四至（北 South 东 West）
+		north, errN := strconv.ParseFloat(r.URL.Query().Get("n"), 64)
+		south, errS := strconv.ParseFloat(r.URL.Query().Get("s"), 64)
+		east, errE := strconv.ParseFloat(r.URL.Query().Get("e"), 64)
+		west, errW := strconv.ParseFloat(r.URL.Query().Get("w"), 64)
+		if errN != nil || errS != nil || errE != nil || errW != nil {
+			http.Error(w, "invalid viewport bounds (n/s/e/w)", http.StatusBadRequest)
+			return
+		}
+		q = elastic.NewGeoBoundingBoxQuery("location").
+			TopLeft(north, west).
+			BottomRight(south, east)
+	} else {
+		// 默认圆形距离查询
+		q = elastic.NewGeoDistanceQuery("location").
+			Distance(ran).
+			Lat(lat).
+			Lon(lon)
+	}
 
 	// 执行搜索请求（在指定索引中执行查询）
 	res, err := client.Search().
 		Index(INDEX).
 		Query(q).
+		Size(size).
 		Pretty(true).
 		Do(context.Background())
 	if err != nil {
@@ -268,12 +308,16 @@ func handlerSearch(w http.ResponseWriter, r *http.Request) {
 
 	fmt.Printf("Query took %d ms, total hits %d\n", res.TookInMillis, res.TotalHits())
 
-	var typ Post
-	var out []Post
-	// 遍历搜索结果，转换为Post结构体
-	for _, item := range res.Each(reflect.TypeOf(typ)) {
-		p := item.(Post)
-		out = append(out, p)
+	var out []PostWithID
+	// 遍历搜索结果，带上每条文档的 ES ID
+	for _, hit := range res.Hits.Hits {
+		var p Post
+		if err := json.Unmarshal(hit.Source, &p); err == nil {
+			out = append(out, PostWithID{
+				ID:   hit.Id,
+				Post: p,
+			})
+		}
 	}
 
 	// 将结果编码为JSON
@@ -383,6 +427,57 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
+// handlerDeletePost 仅允许作者本人删除自己的帖子
+func handlerDeletePost(w http.ResponseWriter, r *http.Request) {
+	username := usernameFromCtx(r.Context())
+	if username == "" {
+		http.Error(w, "missing user in context", http.StatusUnauthorized)
+		return
+	}
+
+	id := r.URL.Query().Get("id")
+	if id == "" {
+		http.Error(w, "missing id", http.StatusBadRequest)
+		return
+	}
+
+	// 创建 ES 客户端
+	client, err := elastic.NewClient(
+		elastic.SetURL(ES_URL),
+		elastic.SetSniff(false),
+	)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 先取文档，验证是否作者本人
+	getResp, err := client.Get().Index(INDEX).Id(id).Do(r.Context())
+	if err != nil || !getResp.Found {
+		http.Error(w, "post not found", http.StatusNotFound)
+		return
+	}
+	var p Post
+	if err := json.Unmarshal(getResp.Source, &p); err != nil {
+		http.Error(w, "failed to parse post", http.StatusInternalServerError)
+		return
+	}
+	if p.User != username {
+		http.Error(w, "forbidden: not the owner", http.StatusForbidden)
+		return
+	}
+
+	// 通过验证后执行删除
+	if _, err := client.Delete().Index(INDEX).Id(id).Do(r.Context()); err != nil {
+		http.Error(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	_, _ = w.Write([]byte(`{"status":"deleted"}`))
+}
+
 func main() {
 	// 创建ES客户端（连接到指定URL并关闭嗅探功能）
 	client, err := elastic.NewClient(
@@ -469,9 +564,10 @@ func main() {
 
 	http.HandleFunc("/login", loginHandler)
 	http.HandleFunc("/signup", signupHandler)
-	// Step 1: 使用 JWT 中间件保护 /post 与 /search
+	// Step 1: 使用 JWT 中间件保护 /post 与 /search 与 /delete
 	http.HandleFunc("/post", jwtRequired(handlerPost))
 	http.HandleFunc("/search", jwtRequired(handlerSearch))
+	http.HandleFunc("/delete", jwtRequired(handlerDeletePost))
 	// listen on PORT if provided by the platform; fallback to 8080 for local dev
 	port := os.Getenv("PORT")
 	if port == "" {
