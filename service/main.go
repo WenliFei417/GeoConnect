@@ -8,6 +8,7 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -92,9 +93,19 @@ func main() {
 
 	// 启动HTTP服务并注册路由
 	fmt.Println("started-service")
-	http.HandleFunc("/post", handlerPost)        // 注册发帖处理函数
-	http.HandleFunc("/search", handlerSearch)    // 注册搜索处理函数
-	log.Fatal(http.ListenAndServe(":8080", nil)) // 启动HTTP服务器
+	// minimal root route so opening the domain won’t 404
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write([]byte("GeoConnect is running. POST /post or GET /search?lat=...&lon=..."))
+	})
+	http.HandleFunc("/post", handlerPost)     // 注册发帖处理函数
+	http.HandleFunc("/search", handlerSearch) // 注册搜索处理函数
+	// listen on PORT if provided by the platform; fallback to 8080 for local dev
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
 // handlerSearch 处理搜索请求
@@ -175,6 +186,7 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 		// --- 处理文件表单上传 ---
 		// 解析 multipart 表单：32MB 内存阈值，超过部分写入临时文件
 		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			log.Printf("parse multipart failed: %v", err) // minimal: log details to help debugging
 			http.Error(w, "invalid multipart form", http.StatusBadRequest)
 			return
 		}
@@ -202,6 +214,7 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 		// 上传到 GCS，返回可访问的公开 URL（课堂最简单做法）
 		url, err := saveToGCS(r.Context(), BUCKET_NAME, file, hdr.Filename)
 		if err != nil {
+			log.Printf("GCS upload error: %v", err) // minimal: log the real error for logs
 			http.Error(w, "upload to GCS failed", http.StatusInternalServerError)
 			return
 		}
