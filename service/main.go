@@ -13,9 +13,11 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"time"
 
 	// 导入Elasticsearch官方Go客户端
 	"cloud.google.com/go/storage"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/olivere/elastic/v7"
 )
@@ -43,69 +45,138 @@ const (
 	DISTANCE = "200km"
 	// 你的 GCS 存储桶名称（Bucket 名），用于保存用户上传的图片
 	BUCKET_NAME = "post-images-geoconnect-475801"
+	USERS_INDEX = "users"
 )
 
-func main() {
-	// 创建ES客户端（连接到指定URL并关闭嗅探功能）
-	client, err := elastic.NewClient(
+// =====================
+// 简化版 JWT 示例（课程项目）
+// =====================
+
+// 定义签名秘钥（生产环境应改为安全的随机字符串）
+var mySigningKey = []byte("secret")
+
+// generateToken：根据用户名生成 JWT，过期时间 24 小时
+func generateToken(username string) (string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"username": username,
+		"exp":      time.Now().Add(24 * time.Hour).Unix(), // 24 小时有效期
+	})
+	return token.SignedString(mySigningKey)
+}
+
+// jwtRequired：检查请求头中的 Authorization 是否带有有效的 JWT
+func jwtRequired(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tokenString := r.Header.Get("Authorization")
+		if !strings.HasPrefix(tokenString, "Bearer ") {
+			http.Error(w, "Missing token", http.StatusUnauthorized)
+			return
+		}
+		tokenString = strings.TrimPrefix(tokenString, "Bearer ")
+
+		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+			return mySigningKey, nil
+		})
+		if err != nil || !token.Valid {
+			http.Error(w, "Invalid token", http.StatusUnauthorized)
+			return
+		}
+
+		// 从 JWT 提取用户名并写入 Context，供下游 handler 使用（Step 7）
+		var username string
+		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+			if v, ok := claims["username"].(string); ok {
+				username = v
+			}
+		}
+		ctx := context.WithValue(r.Context(), "username", username)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	}
+}
+
+// usernameFromCtx 读取在 jwtRequired 中注入的用户名；若不存在返回空字符串
+func usernameFromCtx(ctx context.Context) string {
+	if v := ctx.Value("username"); v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// containsFilteredWords 用于检测字符串中是否包含禁用词
+// 若包含，返回 true；否则返回 false
+func containsFilteredWords(s *string) bool {
+	filteredWords := []string{"spam", "advertisement", "politics"}
+	for _, word := range filteredWords {
+		if strings.Contains(strings.ToLower(*s), word) {
+			return true
+		}
+	}
+	return false
+}
+
+// saveToES 用于保存帖子到Elasticsearch
+func saveToES(p *Post, id string) error {
+	// 创建ES客户端（连接URL并关闭嗅探）
+	esClient, err := elastic.NewClient(
 		elastic.SetURL(ES_URL),
 		elastic.SetSniff(false),
 	)
 	if err != nil {
-		log.Fatalf("failed to create ES client: %v", err)
-		return
+		return err
 	}
 
-	// 查询ES索引是否存在（返回true或false）
-	exists, err := client.IndexExists(INDEX).Do(context.Background())
+	// 写入索引（指定index与id，body为帖子内容）
+	_, err = esClient.Index().
+		Index(INDEX).
+		Id(id).
+		BodyJson(p).
+		Refresh("true"). // 立即可见，便于测试；生产可去掉或用"wait_for"
+		Do(context.Background())
 	if err != nil {
-		log.Fatalf("failed to check index existence: %v", err)
-		return
+		return err
 	}
 
-	if !exists {
-		// 如果索引不存在，定义索引的mapping（数据结构）
-		// mapping中"user"字段类型为keyword，适合精确匹配和聚合
-		// "message"字段类型为text，适合全文搜索
-		// "location"字段类型为geo_point，支持地理位置查询
-		mapping := `{
-			"mappings": {
-				"properties": {
-					"user":     { "type": "keyword" },
-					"message":  { "type": "text"    },
-					"location": { "type": "geo_point" }
-				}
-			}
-		}`
+	fmt.Printf("Post is saved to index=%s, id=%s, message=%s\n", INDEX, id, p.Message)
+	return nil
+}
 
-		// 使用定义好的mapping创建ES索引
-		createResp, err := client.CreateIndex(INDEX).
-			BodyString(mapping).
-			Do(context.Background())
-		if err != nil {
-			log.Fatalf("failed to create index %q: %v", INDEX, err)
-			return
-		}
-		if !createResp.Acknowledged {
-			log.Printf("warning: create index %q not acknowledged by ES", INDEX)
-		}
+// saveToGCS 将上传的文件写入到指定的 GCS 存储桶，并返回可公开访问的 URL。
+// 课堂/练习的最简单做法是假设 Bucket 已设置为 public-read（Uniform 访问控制 + allUsers: Storage Object Viewer）。
+func saveToGCS(ctx context.Context, bucket string, r io.Reader, originalName string) (string, error) {
+	// 创建 GCS 客户端
+	client, err := storage.NewClient(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer client.Close()
+
+	// 生成对象名：使用 uuid + 原文件扩展名，避免重名覆盖
+	ext := strings.ToLower(filepath.Ext(originalName))
+	objName := uuid.New().String() + ext
+
+	obj := client.Bucket(bucket).Object(objName)
+	w := obj.NewWriter(ctx)
+
+	// 设置Content-Type（根据扩展名推断），便于浏览器正确展示
+	if ct := mime.TypeByExtension(ext); ct != "" {
+		w.ContentType = ct
+	}
+	// 可选：为静态资源设置缓存策略
+	// w.CacheControl = "public, max-age=31536000"
+
+	// 写入对象数据
+	if _, err := io.Copy(w, r); err != nil {
+		_ = w.Close()
+		return "", err
+	}
+	if err := w.Close(); err != nil {
+		return "", err
 	}
 
-	// 启动HTTP服务并注册路由
-	fmt.Println("started-service")
-	// minimal root route so opening the domain won’t 404
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte("GeoConnect is running. POST /post or GET /search?lat=...&lon=..."))
-	})
-	http.HandleFunc("/post", handlerPost)     // 注册发帖处理函数
-	http.HandleFunc("/search", handlerSearch) // 注册搜索处理函数
-	// listen on PORT if provided by the platform; fallback to 8080 for local dev
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
-	}
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	// 返回公开访问的 URL（适用于 public-read 桶）
+	return fmt.Sprintf("https://storage.googleapis.com/%s/%s", bucket, objName), nil
 }
 
 // handlerSearch 处理搜索请求
@@ -182,6 +253,11 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 	// 2) application/json（原有 JSON 请求）
 	contentType := r.Header.Get("Content-Type")
 	var p Post
+	username := usernameFromCtx(r.Context())
+	if username == "" {
+		http.Error(w, "missing user in context", http.StatusUnauthorized)
+		return
+	}
 	if strings.Contains(strings.ToLower(contentType), "multipart/form-data") {
 		// --- 处理文件表单上传 ---
 		// 解析 multipart 表单：32MB 内存阈值，超过部分写入临时文件
@@ -195,7 +271,7 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 		lat, _ := strconv.ParseFloat(r.FormValue("lat"), 64)
 		lon, _ := strconv.ParseFloat(r.FormValue("lon"), 64)
 		p = Post{
-			User:    "1111", // 演示用固定用户；后续可替换为真实登录用户
+			User:    username,
 			Message: r.FormValue("message"),
 			Location: Location{
 				Lat: lat,
@@ -226,6 +302,7 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid JSON body", http.StatusBadRequest)
 			return
 		}
+		p.User = username
 	}
 
 	// 检查帖子内容是否包含禁用词（如广告、政治内容等）
@@ -249,77 +326,91 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
-// saveToES 用于保存帖子到Elasticsearch
-func saveToES(p *Post, id string) error {
-	// 创建ES客户端（连接URL并关闭嗅探）
-	esClient, err := elastic.NewClient(
+func main() {
+	// 创建ES客户端（连接到指定URL并关闭嗅探功能）
+	client, err := elastic.NewClient(
 		elastic.SetURL(ES_URL),
 		elastic.SetSniff(false),
 	)
 	if err != nil {
-		return err
+		log.Fatalf("failed to create ES client: %v", err)
+		return
 	}
 
-	// 写入索引（指定index与id，body为帖子内容）
-	_, err = esClient.Index().
-		Index(INDEX).
-		Id(id).
-		BodyJson(p).
-		Refresh("true"). // 立即可见，便于测试；生产可去掉或用"wait_for"
-		Do(context.Background())
+	// Step 2/3: 确保用户索引存在（用于注册/登录）
+	usersExists, err := client.IndexExists(USERS_INDEX).Do(context.Background())
 	if err != nil {
-		return err
+		log.Fatalf("failed to check users index existence: %v", err)
+		return
 	}
-
-	fmt.Printf("Post is saved to index=%s, id=%s, message=%s\n", INDEX, id, p.Message)
-	return nil
-}
-
-// containsFilteredWords 用于检测字符串中是否包含禁用词
-// 若包含，返回 true；否则返回 false
-func containsFilteredWords(s *string) bool {
-	filteredWords := []string{"spam", "advertisement", "politics"}
-	for _, word := range filteredWords {
-		if strings.Contains(strings.ToLower(*s), word) {
-			return true
+	if !usersExists {
+		usersMapping := `{
+			"mappings": {
+				"properties": {
+					"username": { "type": "keyword" },
+					"password": { "type": "keyword" },
+					"age":      { "type": "integer" },
+					"gender":   { "type": "keyword" }
+				}
+			}
+		}`
+		if _, err := client.CreateIndex(USERS_INDEX).BodyString(usersMapping).Do(context.Background()); err != nil {
+			log.Fatalf("failed to create users index %q: %v", USERS_INDEX, err)
+			return
 		}
 	}
-	return false
-}
 
-// saveToGCS 将上传的文件写入到指定的 GCS 存储桶，并返回可公开访问的 URL。
-// 课堂/练习的最简单做法是假设 Bucket 已设置为 public-read（Uniform 访问控制 + allUsers: Storage Object Viewer）。
-func saveToGCS(ctx context.Context, bucket string, r io.Reader, originalName string) (string, error) {
-	// 创建 GCS 客户端
-	client, err := storage.NewClient(ctx)
+	// 查询ES索引是否存在（返回true或false）
+	exists, err := client.IndexExists(INDEX).Do(context.Background())
 	if err != nil {
-		return "", err
-	}
-	defer client.Close()
-
-	// 生成对象名：使用 uuid + 原文件扩展名，避免重名覆盖
-	ext := strings.ToLower(filepath.Ext(originalName))
-	objName := uuid.New().String() + ext
-
-	obj := client.Bucket(bucket).Object(objName)
-	w := obj.NewWriter(ctx)
-
-	// 设置Content-Type（根据扩展名推断），便于浏览器正确展示
-	if ct := mime.TypeByExtension(ext); ct != "" {
-		w.ContentType = ct
-	}
-	// 可选：为静态资源设置缓存策略
-	// w.CacheControl = "public, max-age=31536000"
-
-	// 写入对象数据
-	if _, err := io.Copy(w, r); err != nil {
-		_ = w.Close()
-		return "", err
-	}
-	if err := w.Close(); err != nil {
-		return "", err
+		log.Fatalf("failed to check index existence: %v", err)
+		return
 	}
 
-	// 返回公开访问的 URL（适用于 public-read 桶）
-	return fmt.Sprintf("https://storage.googleapis.com/%s/%s", bucket, objName), nil
+	if !exists {
+		// 如果索引不存在，定义索引的mapping（数据结构）
+		// mapping中"user"字段类型为keyword，适合精确匹配和聚合
+		// "message"字段类型为text，适合全文搜索
+		// "location"字段类型为geo_point，支持地理位置查询
+		mapping := `{
+			"mappings": {
+				"properties": {
+					"user":     { "type": "keyword" },
+					"message":  { "type": "text"    },
+					"location": { "type": "geo_point" }
+				}
+			}
+		}`
+
+		// 使用定义好的mapping创建ES索引
+		createResp, err := client.CreateIndex(INDEX).
+			BodyString(mapping).
+			Do(context.Background())
+		if err != nil {
+			log.Fatalf("failed to create index %q: %v", INDEX, err)
+			return
+		}
+		if !createResp.Acknowledged {
+			log.Printf("warning: create index %q not acknowledged by ES", INDEX)
+		}
+	}
+
+	// 启动HTTP服务并注册路由
+	fmt.Println("started-service")
+	// minimal root route so opening the domain won’t 404
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write([]byte("GeoConnect is running. POST /post or GET /search?lat=...&lon=..."))
+	})
+	http.HandleFunc("/login", loginHandler)
+	http.HandleFunc("/signup", signupHandler)
+	// Step 1: 使用 JWT 中间件保护 /post 与 /search
+	http.HandleFunc("/post", jwtRequired(handlerPost))
+	http.HandleFunc("/search", jwtRequired(handlerSearch))
+	// listen on PORT if provided by the platform; fallback to 8080 for local dev
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
