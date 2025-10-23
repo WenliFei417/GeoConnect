@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>GeoConnect</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+</head>
+<body>
+<header>
+  <h1>GeoConnect</h1>
+  <div id="auth-state">
+    <span id="auth-info">Not logged in</span>
+    <button id="btn-logout" class="secondary" style="display:none;">Logout</button>
+  </div>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1) Sign Up / Login</h2>
+    <div class="grid-2">
+      <form id="form-signup">
+        <h3>Sign Up</h3>
+        <label>Username <input name="username" required></label>
+        <label>Password <input name="password" type="password" required></label>
+        <label>Age <input name="age" type="number" min="0" step="1" required></label>
+        <label>Gender
+          <select name="gender" required>
+            <option value="unknown">unknown</option>
+            <option>female</option>
+            <option>male</option>
+            <option>other</option>
+          </select>
+        </label>
+        <button type="submit">Sign Up</button>
+        <div class="msg" id="signup-msg"></div>
+      </form>
+
+      <form id="form-login" autocomplete="off">
+        <h3>Login</h3>
+        <label>Username <input name="username" required autocomplete="off"></label>
+        <label>Password <input name="password" type="password" required autocomplete="off"></label>
+        <button type="submit">Login</button>
+        <div class="msg" id="login-msg"></div>
+      </form>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>2) Post</h2>
+    <form id="form-post" enctype="multipart/form-data">
+      <label>Message
+        <textarea name="message" rows="2" placeholder="Say something…" required></textarea>
+      </label>
+
+      <div class="grid-3">
+        <label>Latitude (lat) <input name="lat" type="number" step="any" required></label>
+        <label>Longitude (lon) <input name="lon" type="number" step="any" required></label>
+        <button type="button" id="btn-use-location">Use my location</button>
+      </div>
+
+      <label>Image (optional) <input name="image" type="file" accept="image/*"></label>
+
+      <button type="submit">Post</button>
+      <div class="msg" id="post-msg"></div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>3) Search Nearby Posts</h2>
+    <form id="form-search">
+      <div class="grid-4">
+        <label>Latitude (lat) <input name="lat" type="number" step="any" required></label>
+        <label>Longitude (lon) <input name="lon" type="number" step="any" required></label>
+        <label>Range (km) <input name="range" type="number" min="1" value="200" required></label>
+        <button type="button" id="btn-fill-from-post">Copy from Post</button>
+      </div>
+      <div class="grid-2">
+        <button type="button" id="btn-search-my-loc">Use my location</button>
+        <button type="submit">Search</button>
+      </div>
+      <div class="msg" id="search-msg"></div>
+    </form>
+
+    <div id="results" class="results"></div>
+  </section>
+  <section class="card">
+    <h2>Map</h2>
+    <div id="map" style="height: 380px; border-radius: 12px;"></div>
+  </section>
+</main>
+
+<footer>
+  <small>Static files served from <code>/web</code> · same-origin API calls</small>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

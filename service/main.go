@@ -48,6 +48,21 @@ const (
 	USERS_INDEX = "users"
 )
 
+var (
+	// If USE_GCS is "0", we will save uploads to local disk instead of GCS.
+	useGCS = os.Getenv("USE_GCS") != "0"
+	// Local upload directory when useGCS is false.
+	localUploadDir = getenvDefault("LOCAL_UPLOAD_DIR", "uploads")
+)
+
+// getenvDefault returns the environment variable value if set, otherwise def.
+func getenvDefault(k, def string) string {
+	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
 // =====================
 // 简化版 JWT 示例（课程项目）
 // =====================
@@ -179,6 +194,37 @@ func saveToGCS(ctx context.Context, bucket string, r io.Reader, originalName str
 	return fmt.Sprintf("https://storage.googleapis.com/%s/%s", bucket, objName), nil
 }
 
+/*
+saveToLocal saves an uploaded file to a local directory for local testing,
+and returns a URL path that can be served by the Go static handler, e.g. "/uploads/<name>".
+*/
+func saveToLocal(ctx context.Context, dir string, r io.Reader, originalName string) (string, error) {
+	ext := strings.ToLower(filepath.Ext(originalName))
+	if ext == "" {
+		ext = ".bin"
+	}
+	objName := uuid.New().String() + ext
+
+	// Ensure directory exists
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+
+	dstPath := filepath.Join(dir, objName)
+	f, err := os.Create(dstPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(f, r); err != nil {
+		return "", err
+	}
+
+	// Return the public path (served in main() when useGCS == false)
+	return "/uploads/" + objName, nil
+}
+
 // handlerSearch 处理搜索请求
 func handlerSearch(w http.ResponseWriter, r *http.Request) {
 	fmt.Println("Received one request for search")
@@ -279,22 +325,33 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 			},
 		}
 
-		// 从表单获取文件字段：key = "image"
+		// 从表单获取文件字段：key = "image"（可选）
 		file, hdr, err := r.FormFile("image")
-		if err != nil {
-			http.Error(w, "image is not available", http.StatusBadRequest)
-			return
+		if err == nil && file != nil {
+			defer file.Close()
+			if useGCS {
+				// 上传到 GCS
+				url, err := saveToGCS(r.Context(), BUCKET_NAME, file, hdr.Filename)
+				if err != nil {
+					log.Printf("GCS upload error: %v", err)
+					http.Error(w, "upload to GCS failed", http.StatusInternalServerError)
+					return
+				}
+				p.Url = url
+			} else {
+				// 保存到本地目录，返回可访问的相对路径
+				url, err := saveToLocal(r.Context(), localUploadDir, file, hdr.Filename)
+				if err != nil {
+					log.Printf("local upload error: %v", err)
+					http.Error(w, "upload to local failed", http.StatusInternalServerError)
+					return
+				}
+				p.Url = url
+			}
+		} else {
+			// 没有图片也允许发帖
+			log.Printf("no image provided in multipart form; continuing without image")
 		}
-		defer file.Close()
-
-		// 上传到 GCS，返回可访问的公开 URL（课堂最简单做法）
-		url, err := saveToGCS(r.Context(), BUCKET_NAME, file, hdr.Filename)
-		if err != nil {
-			log.Printf("GCS upload error: %v", err) // minimal: log the real error for logs
-			http.Error(w, "upload to GCS failed", http.StatusInternalServerError)
-			return
-		}
-		p.Url = url
 	} else {
 		// --- 处理原有 JSON 请求 ---
 		decoder := json.NewDecoder(r.Body)
@@ -397,11 +454,19 @@ func main() {
 
 	// 启动HTTP服务并注册路由
 	fmt.Println("started-service")
-	// minimal root route so opening the domain won’t 404
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Write([]byte("GeoConnect is running. POST /post or GET /search?lat=...&lon=..."))
-	})
+	// 静态前端：将根路径 "/" 指向 web/ 目录，直接服务 index.html、styles.css、app.js 等文件
+	// 说明：Go 的路由是“最长前缀优先”。我们对 /signup、/login、/post、/search 都注册了更具体的路径，
+	// 所以它们会优先匹配，不会被下面的 "/" 静态路由覆盖；只有其他未匹配的路径才会落到静态文件。
+	fs := http.FileServer(http.Dir("web"))
+	http.Handle("/", fs)
+
+	// When running locally (USE_GCS=0), serve uploaded files from /uploads/
+	if !useGCS {
+		// Map URL path /uploads/ to the localUploadDir on disk
+		http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(localUploadDir))))
+		log.Printf("local upload dir enabled: serving %q at /uploads/", localUploadDir)
+	}
+
 	http.HandleFunc("/login", loginHandler)
 	http.HandleFunc("/signup", signupHandler)
 	// Step 1: 使用 JWT 中间件保护 /post 与 /search
