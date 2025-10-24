@@ -3,6 +3,7 @@ instance_class: F1   # 轻量实例，节省资源
 
 env_variables:
   GCS_BUCKET: "post-images-geoconnect-475801"
+  ADMIN_USERS: "kimi"
 
 handlers:
   - url: /.*
