@@ -13,43 +13,15 @@
   <h1>GeoConnect</h1>
   <div id="auth-state">
     <span id="auth-info">Not logged in</span>
+    <a id="btn-login-link" class="secondary" href="auth.html">Login</a>
     <button id="btn-logout" class="secondary" style="display:none;">Logout</button>
   </div>
 </header>
 
 <main>
-  <section class="card">
-    <h2>1) Sign Up / Login</h2>
-    <div class="grid-2">
-      <form id="form-signup">
-        <h3>Sign Up</h3>
-        <label>Username <input name="username" required></label>
-        <label>Password <input name="password" type="password" required></label>
-        <label>Age <input name="age" type="number" min="0" step="1" required></label>
-        <label>Gender
-          <select name="gender" required>
-            <option value="unknown">unknown</option>
-            <option>female</option>
-            <option>male</option>
-            <option>other</option>
-          </select>
-        </label>
-        <button type="submit">Sign Up</button>
-        <div class="msg" id="signup-msg"></div>
-      </form>
-
-      <form id="form-login" autocomplete="off">
-        <h3>Login</h3>
-        <label>Username <input name="username" required autocomplete="off"></label>
-        <label>Password <input name="password" type="password" required autocomplete="off"></label>
-        <button type="submit">Login</button>
-        <div class="msg" id="login-msg"></div>
-      </form>
-    </div>
-  </section>
 
   <section class="card">
-    <h2>2) Post</h2>
+    <h2>Post</h2>
     <form id="form-post" enctype="multipart/form-data">
       <label>Message
         <textarea name="message" rows="2" placeholder="Say something…" required></textarea>
@@ -69,7 +41,7 @@
   </section>
 
   <section class="card">
-    <h2>3) Search Nearby Posts</h2>
+    <h2>Search Nearby Posts</h2>
     <form id="form-search">
       <div class="grid-4">
         <label>Latitude (lat) <input name="lat" type="number" step="any" required></label>

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Login | GeoConnect</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="auth-body">
+  <main class="auth-container">
+    <h1>GeoConnect</h1>
+
+    <section class="auth-card">
+      <h2>Login</h2>
+      <form id="form-login">
+        <label>Username <input name="username" required /></label>
+        <label>Password <input name="password" type="password" required /></label>
+        <button type="submit">Login</button>
+        <div class="msg" id="login-msg"></div>
+      </form>
+    </section>
+
+    <section class="auth-card">
+      <h2>Sign Up</h2>
+      <form id="form-signup">
+        <label>Username <input name="username" required /></label>
+        <label>Password <input name="password" type="password" required /></label>
+        <button type="submit">Sign Up</button>
+        <div class="msg" id="signup-msg"></div>
+      </form>
+    </section>
+
+    <a href="/" class="back-home">← Back to Home</a>
+  </main>
+
+  <script src="auth.js"></script>
+</body>
+</html>

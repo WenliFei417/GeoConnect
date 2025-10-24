@@ -2,6 +2,7 @@ const $ = (sel) => document.querySelector(sel);
 
 const authInfo = $("#auth-info");
 const btnLogout = $("#btn-logout");
+const btnLoginLink = $("#btn-login-link");
 
 const formSignup = $("#form-signup");
 const signupMsg = $("#signup-msg");
@@ -92,18 +93,31 @@ async function viewportSearch() {
   }
 }
 
-function getToken() { return localStorage.getItem("gc_token") || ""; }
+function getToken() {
+  return localStorage.getItem("token") || localStorage.getItem("gc_token") || "";
+}
 function setToken(t) {
-  if (t) localStorage.setItem("gc_token", t);
-  else localStorage.removeItem("gc_token");
+  if (t) {
+    localStorage.setItem("token", t);
+    localStorage.setItem("gc_token", t);
+  } else {
+    localStorage.removeItem("token");
+    localStorage.removeItem("gc_token");
+  }
   renderAuthState();
 }
 function renderAuthState() {
   const t = getToken();
   authInfo.textContent = t ? "Logged in" : "Not logged in";
-  btnLogout.style.display = t ? "inline-block" : "none";
+  if (btnLogout) btnLogout.style.display = t ? "inline-block" : "none";
+  if (btnLoginLink) btnLoginLink.style.display = t ? "none" : "inline-block";
 }
-btnLogout.addEventListener("click", () => setToken(""));
+if (btnLogout) {
+  btnLogout.addEventListener("click", () => {
+    setToken("");
+    window.location.href = "/auth.html";
+  });
+}
 
 async function safeFetch(path, init = {}) {
   const token = getToken();
@@ -138,50 +152,54 @@ function setMsg(el, text, ok = true) {
   el.className = "msg " + (ok ? "ok" : "err");
 }
 
-formSignup.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  setMsg(signupMsg, "Signing up...");
-  const fd = new FormData(formSignup);
-  const body = {
-    username: fd.get("username"),
-    password: fd.get("password"),
-    age: Number(fd.get("age")),
-    gender: fd.get("gender") || "unknown",
-  };
-  try {
-    const res = await fetch("/signup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) { setMsg(signupMsg, "Signup failed: " + (await res.text()), false); return; }
-    setMsg(signupMsg, "Signup successful. Please log in.", true);
-    formSignup.reset();
-  } catch (err) { setMsg(signupMsg, "Network error: " + err, false); }
-});
+if (formSignup) {
+  formSignup.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    setMsg(signupMsg, "Signing up...");
+    const fd = new FormData(formSignup);
+    const body = {
+      username: fd.get("username"),
+      password: fd.get("password"),
+      age: Number(fd.get("age")),
+      gender: fd.get("gender") || "unknown",
+    };
+    try {
+      const res = await fetch("/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) { setMsg(signupMsg, "Signup failed: " + (await res.text()), false); return; }
+      setMsg(signupMsg, "Signup successful. Please log in.", true);
+      formSignup.reset();
+    } catch (err) { setMsg(signupMsg, "Network error: " + err, false); }
+  });
+}
 
-formLogin.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  setMsg(loginMsg, "Logging in...");
-  const fd = new FormData(formLogin);
-  const body = { username: fd.get("username"), password: fd.get("password") };
-  try {
-    const res = await fetch("/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    if (!res.ok) { setMsg(loginMsg, "Login failed: " + (await res.text()), false); return; }
-    const data = await res.json().catch(async () => ({ token: await res.text() }));
-    const token = data.token || data || "";
-    if (!token) { setMsg(loginMsg, "No token returned.", false); return; }
-    setToken(token);
-    setMsg(loginMsg, "Login successful.", true);
-    formLogin.reset();
-    // Force clear in case the browser re-applies autofill right after reset
-    formLogin.querySelectorAll('input').forEach(el => { el.value = ''; });
-  } catch (err) { setMsg(loginMsg, "Network error: " + err, false); }
-});
+if (formLogin) {
+  formLogin.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    setMsg(loginMsg, "Logging in...");
+    const fd = new FormData(formLogin);
+    const body = { username: fd.get("username"), password: fd.get("password") };
+    try {
+      const res = await fetch("/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) { setMsg(loginMsg, "Login failed: " + (await res.text()), false); return; }
+      const data = await res.json().catch(async () => ({ token: await res.text() }));
+      const token = data.token || data || "";
+      if (!token) { setMsg(loginMsg, "No token returned.", false); return; }
+      setToken(token);
+      setMsg(loginMsg, "Login successful.", true);
+      formLogin.reset();
+      // Force clear in case the browser re-applies autofill right after reset
+      formLogin.querySelectorAll('input').forEach(el => { el.value = ''; });
+    } catch (err) { setMsg(loginMsg, "Network error: " + err, false); }
+  });
+}
 
 btnUseLoc.addEventListener("click", async () => {
   const latInput = formPost.querySelector('input[name="lat"]');
