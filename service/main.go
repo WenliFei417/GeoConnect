@@ -35,7 +35,7 @@ type Post struct {
 	Url      string   `json:"url,omitempty"` // 图片在GCS中的公开访问地址
 }
 
-// PostWithID is used for search responses to include ES document ID.
+// PostWithID 用于在搜索响应中携带 ES 文档 ID（便于前端删除等操作）。
 type PostWithID struct {
 	ID string `json:"id"`
 	Post
@@ -60,7 +60,29 @@ var (
 	localUploadDir = getenvDefault("LOCAL_UPLOAD_DIR", "uploads")
 )
 
-// getenvDefault returns the environment variable value if set, otherwise def.
+// --- 管理员（超级用户）支持 ---
+// adminSet 保存从环境变量 ADMIN_USERS（逗号分隔）加载的管理员用户名（统一转为小写）
+var adminSet = map[string]bool{}
+
+func isAdminUsername(u string) bool {
+	u = strings.ToLower(strings.TrimSpace(u))
+	if u == "" {
+		return false
+	}
+	return adminSet[u]
+}
+
+// 从 Context 读取管理员标记
+func isAdminFromCtx(ctx context.Context) bool {
+	if v := ctx.Value("is_admin"); v != nil {
+		if b, ok := v.(bool); ok {
+			return b
+		}
+	}
+	return false
+}
+
+// getenvDefault：若环境变量存在则返回其值，否则返回默认值
 func getenvDefault(k, def string) string {
 	if v := os.Getenv(k); v != "" {
 		return v
@@ -75,10 +97,11 @@ func getenvDefault(k, def string) string {
 // 定义签名秘钥（生产环境应改为安全的随机字符串）
 var mySigningKey = []byte("secret")
 
-// generateToken：根据用户名生成 JWT，过期时间 24 小时
+// generateToken：根据用户名生成 JWT，过期时间 24 小时；并携带 is_admin 声明
 func generateToken(username string) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"username": username,
+		"is_admin": isAdminUsername(username),
 		"exp":      time.Now().Add(24 * time.Hour).Unix(), // 24 小时有效期
 	})
 	return token.SignedString(mySigningKey)
@@ -102,14 +125,22 @@ func jwtRequired(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// 从 JWT 提取用户名并写入 Context，供下游 handler 使用（Step 7）
+		// 从 JWT 提取用户名与 is_admin 并写入 Context
 		var username string
+		var isAdmin bool
 		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 			if v, ok := claims["username"].(string); ok {
 				username = v
 			}
+			// 兼容 bool 或字符串
+			if vb, ok := claims["is_admin"].(bool); ok {
+				isAdmin = vb
+			} else if vs, ok := claims["is_admin"].(string); ok && strings.ToLower(vs) == "true" {
+				isAdmin = true
+			}
 		}
 		ctx := context.WithValue(r.Context(), "username", username)
+		ctx = context.WithValue(ctx, "is_admin", isAdmin)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
 }
@@ -200,8 +231,8 @@ func saveToGCS(ctx context.Context, bucket string, r io.Reader, originalName str
 }
 
 /*
-saveToLocal saves an uploaded file to a local directory for local testing,
-and returns a URL path that can be served by the Go static handler, e.g. "/uploads/<name>".
+saveToLocal：在本地测试时将上传文件保存到本地目录，
+并返回可由 Go 静态文件服务访问的 URL 路径，例如 "/uploads/<文件名>"。
 */
 func saveToLocal(ctx context.Context, dir string, r io.Reader, originalName string) (string, error) {
 	ext := strings.ToLower(filepath.Ext(originalName))
@@ -427,7 +458,7 @@ func handlerPost(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
 
-// handlerDeletePost 仅允许作者本人删除自己的帖子
+// handlerDeletePost 仅允许作者本人或管理员删除帖子
 func handlerDeletePost(w http.ResponseWriter, r *http.Request) {
 	username := usernameFromCtx(r.Context())
 	if username == "" {
@@ -451,7 +482,7 @@ func handlerDeletePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 先取文档，验证是否作者本人
+	// 先取文档，验证是否作者本人或管理员
 	getResp, err := client.Get().Index(INDEX).Id(id).Do(r.Context())
 	if err != nil || !getResp.Found {
 		http.Error(w, "post not found", http.StatusNotFound)
@@ -462,8 +493,8 @@ func handlerDeletePost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to parse post", http.StatusInternalServerError)
 		return
 	}
-	if p.User != username {
-		http.Error(w, "forbidden: not the owner", http.StatusForbidden)
+	if p.User != username && !isAdminFromCtx(r.Context()) {
+		http.Error(w, "forbidden: not the owner or admin", http.StatusForbidden)
 		return
 	}
 
@@ -487,6 +518,19 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to create ES client: %v", err)
 		return
+	}
+
+	// 从环境变量 ADMIN_USERS（逗号分隔的用户名）加载管理员列表到 adminSet
+	if admins := os.Getenv("ADMIN_USERS"); admins != "" {
+		for _, u := range strings.Split(admins, ",") {
+			s := strings.ToLower(strings.TrimSpace(u))
+			if s != "" {
+				adminSet[s] = true
+			}
+		}
+		log.Printf("admin users loaded: %v", adminSet)
+	} else {
+		log.Printf("no ADMIN_USERS set; no superuser configured")
 	}
 
 	// Step 2/3: 确保用户索引存在（用于注册/登录）
@@ -555,9 +599,9 @@ func main() {
 	fs := http.FileServer(http.Dir("web"))
 	http.Handle("/", fs)
 
-	// When running locally (USE_GCS=0), serve uploaded files from /uploads/
+	// 本地运行（USE_GCS=0）时，从 /uploads/ 路径提供已上传文件
 	if !useGCS {
-		// Map URL path /uploads/ to the localUploadDir on disk
+		// 将 URL 路径 /uploads/ 映射到磁盘目录 localUploadDir
 		http.Handle("/uploads/", http.StripPrefix("/uploads/", http.FileServer(http.Dir(localUploadDir))))
 		log.Printf("local upload dir enabled: serving %q at /uploads/", localUploadDir)
 	}
@@ -568,7 +612,7 @@ func main() {
 	http.HandleFunc("/post", jwtRequired(handlerPost))
 	http.HandleFunc("/search", jwtRequired(handlerSearch))
 	http.HandleFunc("/delete", jwtRequired(handlerDeletePost))
-	// listen on PORT if provided by the platform; fallback to 8080 for local dev
+	// 监听端口：若平台提供 PORT 环境变量则使用，否则本地默认 8080
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"

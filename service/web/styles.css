@@ -81,3 +81,32 @@ button.secondary { background: #f0f2f6; }
   color: #333;
   text-decoration: none;
 }
+
+/* ===== State browse section ===== */
+.state-browse {
+  background: #fff;
+  border: 1px solid #e6e7eb;
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-top: 16px;
+}
+
+.state-browse label {
+  font-weight: 500;
+}
+
+.state-browse select {
+  width: 100%;
+}
+
+.state-browse button {
+  background: #007bff;
+  color: white;
+  border: none;
+  padding: 8px 12px;
+  border-radius: 8px;
+}
+
+.state-browse button:hover {
+  background: #0056b3;
+}
