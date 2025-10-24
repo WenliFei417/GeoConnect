@@ -125,18 +125,24 @@ func jwtRequired(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 
-		// 从 JWT 提取用户名与 is_admin 并写入 Context
+		// 从 JWT 提取用户名，并基于当前环境变量现算 is_admin；旧 token 仅作兜底
 		var username string
 		var isAdmin bool
 		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 			if v, ok := claims["username"].(string); ok {
 				username = v
 			}
-			// 兼容 bool 或字符串
-			if vb, ok := claims["is_admin"].(bool); ok {
-				isAdmin = vb
-			} else if vs, ok := claims["is_admin"].(string); ok && strings.ToLower(vs) == "true" {
-				isAdmin = true
+		}
+		// ✅ 优先使用当前 ADMIN_USERS 计算是否管理员（无需强制重登）
+		isAdmin = isAdminUsername(username)
+		// 兼容旧 token：若现算不是管理员，再信任旧 token 里 is_admin=true
+		if !isAdmin {
+			if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
+				if vb, ok := claims["is_admin"].(bool); ok && vb {
+					isAdmin = true
+				} else if vs, ok := claims["is_admin"].(string); ok && strings.ToLower(vs) == "true" {
+					isAdmin = true
+				}
 			}
 		}
 		ctx := context.WithValue(r.Context(), "username", username)
@@ -493,6 +499,7 @@ func handlerDeletePost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to parse post", http.StatusInternalServerError)
 		return
 	}
+	log.Printf("[auth] delete id=%q by user=%q isAdmin=%v admins=%v", id, username, isAdminFromCtx(r.Context()), adminSet)
 	if p.User != username && !isAdminFromCtx(r.Context()) {
 		http.Error(w, "forbidden: not the owner or admin", http.StatusForbidden)
 		return
@@ -520,6 +527,7 @@ func main() {
 		return
 	}
 
+	log.Printf("[boot] ADMIN_USERS=%q", os.Getenv("ADMIN_USERS"))
 	// 从环境变量 ADMIN_USERS（逗号分隔的用户名）加载管理员列表到 adminSet
 	if admins := os.Getenv("ADMIN_USERS"); admins != "" {
 		for _, u := range strings.Split(admins, ",") {
