@@ -472,7 +472,20 @@ func handlerDeletePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	id := r.URL.Query().Get("id")
+	// Accept id from query string or JSON body
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		var body struct {
+			ID string `json:"id"`
+		}
+		// Try to decode JSON body if provided
+		if r.Body != nil {
+			dec := json.NewDecoder(r.Body)
+			if err := dec.Decode(&body); err == nil {
+				id = strings.TrimSpace(body.ID)
+			}
+		}
+	}
 	if id == "" {
 		http.Error(w, "missing id", http.StatusBadRequest)
 		return
@@ -506,7 +519,7 @@ func handlerDeletePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 通过验证后执行删除
-	if _, err := client.Delete().Index(INDEX).Id(id).Do(r.Context()); err != nil {
+	if _, err := client.Delete().Index(INDEX).Id(id).Refresh("true").Do(r.Context()); err != nil {
 		http.Error(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -617,7 +630,16 @@ func main() {
 	http.HandleFunc("/login", loginHandler)
 	http.HandleFunc("/signup", signupHandler)
 	// Step 1: 使用 JWT 中间件保护 /post 与 /search 与 /delete
-	http.HandleFunc("/post", jwtRequired(handlerPost))
+	http.HandleFunc("/post", jwtRequired(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			handlerPost(w, r)
+		case http.MethodDelete:
+			handlerDeletePost(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	}))
 	http.HandleFunc("/search", jwtRequired(handlerSearch))
 	http.HandleFunc("/delete", jwtRequired(handlerDeletePost))
 	// 监听端口：若平台提供 PORT 环境变量则使用，否则本地默认 8080
