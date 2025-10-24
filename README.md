@@ -8,6 +8,18 @@ This project is designed for **course projects or small-scale demos**, and can b
 
 ---
 
+## ✨ Features
+
+- 📍 **Geo-based Search:** Find nearby posts using latitude and longitude with real-time Elasticsearch queries.  
+- 🧭 **Interactive Posting:** Create posts with messages, images, and precise geolocation data.  
+- 🧑‍💻 **User Authentication:** Secure signup and login system using bcrypt and JWT.  
+- 🗑️ **Role-based Deletion:** Only authors or admin users can delete posts.  
+- ☁️ **Cloud Storage:** Store uploaded images in Google Cloud Storage or locally for testing.  
+- 🔍 **Elasticsearch Integration:** Efficient full-text and geospatial indexing for scalable search.  
+- 🚀 **Deployment Ready:** Fully deployable on Google App Engine with minimal configuration.  
+
+---
+
 ## 🧩 Tech Stack
 
 - **Language:** Go (tested with Go 1.22+; `app.yaml` uses `runtime: go122`)
