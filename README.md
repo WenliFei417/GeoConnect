@@ -1,4 +1,6 @@
-# GeoConnect — Location-Based Social Posting & Search Platform (Go Backend)
+# 🌍 GeoConnect — Location-Based Social Posting & Search Platform (Go Backend)
+
+**Live Demo:** [https://geoconnect-475801.uc.r.appspot.com](https://geoconnect-475801.uc.r.appspot.com)
 
 **GeoConnect** is a **location-based mini social network** where users can **sign up, log in, post messages with images and geolocation**, and **search for nearby posts** on a map.  
 It provides a RESTful backend service implemented in **Go**, powered by **Elasticsearch** for geo-search and **Google Cloud Storage (GCS)** or local storage for media uploads.  
