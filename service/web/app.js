@@ -417,7 +417,11 @@ async function deletePost(id, cardEl, btnEl) {
   try {
     btnEl.disabled = true;
     btnEl.textContent = 'Deleting...';
-    const res = await safeFetch(`/post?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+    const res = await safeFetch(`/post`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    });
     const txt = await res.text();
     if (!res.ok) {
       btnEl.disabled = false;
