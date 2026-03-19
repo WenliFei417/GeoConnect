@@ -16,6 +16,7 @@ Demo repository:
 
 **Note:**  
 This is a frontend-only version of GeoConnect built for demonstration purposes.  
+
 The original full-stack version (Spring Boot + database) was previously deployed on Google Cloud, but the free tier expired.
 
 To keep the project easily accessible for recruiters and reviewers, I created a lightweight frontend demo that simulates the core features (posting, browsing, map-based interactions) using local storage.
