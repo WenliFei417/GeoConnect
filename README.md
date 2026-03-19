@@ -6,6 +6,18 @@ It provides a RESTful backend service implemented in **Go**, powered by **Elasti
 This project is designed for **course projects or small-scale demos**, and can be deployed directly on **Google App Engine**.
 
 ---
+## 🌐 Live Demo
+
+You can try the frontend demo here:  
+👉 https://geo-connect2.vercel.app/
+
+**Note:**  
+This is a frontend-only version of GeoConnect built for demonstration purposes.  
+The original full-stack version (Spring Boot + database) was previously deployed on Google Cloud, but the free tier expired.
+
+To keep the project easily accessible for recruiters and reviewers, I created a lightweight frontend demo that simulates the core features (posting, browsing, map-based interactions) using local storage.
+
+---
 
 ## ✨ Features
 
