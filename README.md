@@ -8,8 +8,11 @@ This project is designed for **course projects or small-scale demos**, and can b
 ---
 ## 🌐 Live Demo
 
-You can try the frontend demo here:  
+Frontend demo:  
 👉 https://geo-connect2.vercel.app/
+
+Demo repository:  
+👉 https://github.com/WenliFei417/GeoConnect2
 
 **Note:**  
 This is a frontend-only version of GeoConnect built for demonstration purposes.  
